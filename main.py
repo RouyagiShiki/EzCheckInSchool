@@ -10,17 +10,69 @@ with open('./response.json', 'r', encoding='utf8')as fp:
     major_all = response_json['data']['majorAll']
     class_all = response_json['data']['classAll']
 
-# 输入Secrets
-stu_name = input()
-stu_id = input()
-dept_text = input()
-sc_url = input()
-
 
 def main():
     """
     主函数
     """
+    user_name = []
+    user_id = []
+    dept_text = []
+    wx_uid = []
+    # 输入Secrets
+    user_in = input()
+    while user_in != 'end':
+        info = user_in.split(',')
+        user_name.append(info[0])
+        user_id.append(info[1])
+        dept_text.append(info[2])
+        wx_uid.append(info[3])
+        user_in = input()
+
+    # 时间判断 Github Actions采用国际标准时
+    hms = update_time()
+    if (hms[0] >= 6) & (hms[0] < 8):
+        customer_app_type_rule_id = 146
+    elif (hms[0] >= 12) & (hms[0] < 14):
+        customer_app_type_rule_id = 147
+    elif (hms[0] >= 21) & (hms[0] < 22):
+        customer_app_type_rule_id = 148
+    else:
+        print('未到打卡时间，将重打早间卡测试')
+        customer_app_type_rule_id = 146
+
+    for index, value in enumerate(user_id):
+        time_msg = str(hms[0]) + '时' + str(hms[1]) + '分' + str(hms[2]) + '秒'
+        response = check_in(user_name[index],
+                            user_id[index],
+                            dept_text[index],
+                            customer_app_type_rule_id)
+        if '成功' in response:
+            title = value[-4:] + ' ' + time_msg + '打卡成功'
+        else:
+            title = value[-4:] + ' ' + time_msg + '打卡失败，请手动补卡'
+        print(title)
+        wx_push(wx_uid[index], title, response)
+        hms = update_time()
+
+
+def print_info_error():
+    """
+    打印 个人信息错误
+    """
+    print('请检查你填写的个人信息！')
+    print('如:')
+    print('小明,201912340101,理学院-应用物理学-应物1901,UID_abcdefghijklm')
+    print('end')
+
+
+def update_time():
+    return [(time.localtime().tm_hour + 8) % 24,
+            time.localtime().tm_min,
+            time.localtime().tm_sec]
+
+
+def get_class_id(dept_text):
     # 获取学院、专业和班级信息
     try:
         info = dept_text.split('-', 3)
@@ -33,47 +85,42 @@ def main():
 
     # 获取deptId
     try:
-        print('获取deptId中...')
         for college in college_all:
             if college['name'] == college_name:
                 college_id = college['deptId']
+                break
         for major in major_all:
             if (major['name'] == major_name) & (major['parentId'] == college_id):
                 major_id = major['deptId']
+                break
         for class_ in class_all:
             if (class_['name'] == class_name) & (class_['parentId'] == major_id):
                 class_id = class_['deptId']
+                break
         if class_id:
-            print('获取deptId成功!')
+            print()
     except NameError:
         print_info_error()
         exit(1)
+    return class_id
 
-    # 时间判断 Github Actions采用国际标准时
-    time_h = (time.localtime().tm_hour + 8) % 24
-    time_m = time.localtime().tm_min
-    time_s = time.localtime().tm_sec
-    if (time_h >= 6) & (time_h < 8):
-        template_id = "clockSign1"
-        customer_app_type_rule_id = 146
-    elif (time_h >= 12) & (time_h < 14):
-        template_id = "clockSign2"
-        customer_app_type_rule_id = 147
-    elif (time_h >= 21) & (time_h <= 22):
-        template_id = "clockSign3"
-        customer_app_type_rule_id = 148
-    else:
-        print("现在是%d点%d分，将打卡早间档测试" % (time_h, time_m))
-        template_id = "clockSign1"
-        customer_app_type_rule_id = 146
 
+def switch_customer_app_type_rule_id(customer_app_type_rule_id):
+    switcher = {
+        146: 'clockSign1',
+        147: 'clockSign2',
+        148: 'clockSign3'
+    }
+    return switcher.get(customer_app_type_rule_id, "nothing")
+
+
+def get_check_json(stu_name, stu_id, dept_text, customer_app_type_rule_id):
     # 随机温度(36.2~36.5)
     a = random.uniform(36.2, 36.5)
     temperature = round(a, 1)
-
-    check_url = "https://reportedh5.17wanxiao.com/sass/api/epmpics"
-
-    check_json = {
+    class_id = get_class_id(dept_text)
+    template_id = switch_customer_app_type_rule_id(customer_app_type_rule_id)
+    return {
         "businessType": "epmpics",
         "method": "submitUpInfoSchool",
         "jsonData": {
@@ -108,56 +155,45 @@ def main():
         },
     }
 
-    # 提交打卡与结果判定
-    flag = 0
-    for i in range(1, 5):
-        print('第{0}次尝试打卡中...'.format(i))
+
+def check_in(stu_name, stu_id, dept_text, customer_app_type_rule_id):
+    # 获取打卡URL及JSON
+    check_url = "https://reportedh5.17wanxiao.com/sass/api/epmpics"
+    check_json = get_check_json(stu_name, stu_id, dept_text, customer_app_type_rule_id)
+
+    # 提交打卡与结果返回
+    for i in range(1, 10):
         response = requests.post(check_url, json=check_json)
         if response.status_code == 200:
-            flag = 1
             break
         else:
-            print('第{0}次打卡失败!'.format(i))
-            time.sleep(60)
+            time.sleep(30)
     print(response.text)
-    time_msg = str(time_h) + '时' + str(time_m) + '分' + str(time_s) + '秒'
-    if flag == 1:
-        if response.json()["msg"] == '成功':
-            msg = time_msg + '时' + "打卡成功"
-        else:
-            msg = time_msg + "打卡异常"
-    else:
-        msg = time_msg + "网络错误打卡失败"
+    return response.text
 
-    print(msg)
 
+def wx_push(wx_uid, title, response):
     # 微信通知
-    title = msg
-    result = json.dumps(response.json(), sort_keys=True, indent=4, separators=(',', ': '), ensure_ascii=False)
+    wx_pusher_url = 'http://wxpusher.zjiecode.com/api/send/message'
     content = f"""
-    ```
-    {result}
-    ```
+    
+```
+{response}
+```
 
-    """
+### 💴扫码捐赠一杯咖啡
+<center><img src="https://s1.ax1x.com/2020/09/16/w25Jxg.png"/></center>
+### 😢[反馈](https://github.com/chillsoul/EzCheckInSchool/issues)
+### 😀[记得Star此项目](https://github.com/chillsoul/EzCheckInSchool)
+        """
     data = {
-        "text": title,
-        "desp": content
+        "appToken": "AT_bVK4MZob9c9acNmLbWHN6RjQxeGllOOB",
+        "content": content,
+        "summary": title,
+        "contentType": 3,
+        "uids": [wx_uid]
     }
-    response = requests.post(sc_url, data=data)
-    if response.status_code == 200:
-        print('Server酱推送成功!')
-    else:
-        print('Server酱推送失败!')
-
-
-def print_info_error():
-    """
-    打印 个人信息错误
-    """
-    print('请检查你填写的学院、专业、班级信息！')
-    print('见完美校园健康打卡页面')
-    print('如 理学院-应用物理学-应物1901')
+    response = requests.post(wx_pusher_url, json=data)
 
 
 if __name__ == '__main__':
